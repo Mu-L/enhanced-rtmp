@@ -16,12 +16,12 @@ bin/eflv [command] [flags]
 
 ### Commands
 
-#### dump
+#### info
 
-Dump structural information about an FLV / E-FLV file.
+Display structural information about an FLV / E-FLV file.
 
 ```bash
-bin/eflv dump <input.flv> [--json] [--verbose]
+bin/eflv info <input.flv> [--json] [--verbose]
 ```
 
 | Flag        | Description                                                   |
@@ -48,7 +48,7 @@ bin/eflv merge <a.flv> <b.flv> -o <out.flv> [--multitrack]
 ├── main.go          # Entry point
 ├── cmd/
 │   ├── root.go      # Root CLI command (Cobra)
-│   ├── dump.go      # dump subcommand
+│   ├── info.go      # info subcommand
 │   └── merge.go     # merge subcommand
 ├── flv/
 │   ├── parser.go        # FLV file parsing

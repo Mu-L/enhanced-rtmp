@@ -46,8 +46,8 @@ func parseHeader(f *os.File) (FLVHeader, error) {
 	}, nil
 }
 
-// DumpFLV reads an FLV/E-FLV file and prints structural information.
-func DumpFLV(inputPath string, jsonOutput bool, verbose bool) error {
+// InfoFLV reads an FLV/E-FLV file and prints structural information.
+func InfoFLV(inputPath string, jsonOutput bool, verbose bool) error {
 	f, err := os.Open(inputPath)
 	if err != nil {
 		return fmt.Errorf("opening file: %w", err)
