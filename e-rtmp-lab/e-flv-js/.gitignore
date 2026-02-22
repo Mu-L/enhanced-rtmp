@@ -1,0 +1,7 @@
+# Minimal ignore file for e-flv-js folder (for independent clones)
+.vscode/
+assets/
+dist/
+local/
+node_modules/
+package-lock.json
