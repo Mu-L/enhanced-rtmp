@@ -1,0 +1,11 @@
+# IDE configuration
+.vscode/
+
+# Build artifacts & binaries
+bin/
+
+# Generated/external assets
+assets/
+
+# Local development files (configs, test data, etc.)
+local/
