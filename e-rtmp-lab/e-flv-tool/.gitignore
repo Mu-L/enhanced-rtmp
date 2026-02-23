@@ -3,6 +3,7 @@
 
 # Build artifacts & binaries
 bin/
+__debug_bin*
 
 # Generated/external assets
 assets/
