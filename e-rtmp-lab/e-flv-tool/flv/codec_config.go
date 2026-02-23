@@ -22,6 +22,16 @@ type ConfigField struct {
 // Packet type for sequence start (same value for both video and audio in E-RTMP).
 const packetTypeSequenceStart = 0
 
+// VideoPacketType values.
+const videoPacketTypeMultitrack = 6
+
+// AvMultitrackType values.
+const (
+	avMultitrackOneTrack             = 0
+	avMultitrackManyTracks           = 1
+	avMultitrackManyTracksManyCodecs = 2
+)
+
 // Legacy codec identifiers.
 const (
 	videoCodecIDAVC    = 7
@@ -31,66 +41,218 @@ const (
 
 // AAC sampling frequency table (ISO 14496-3).
 var aacSamplingFrequencies = [...]int{
-	96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
-	16000, 12000, 11025, 8000, 7350,
+	96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
 }
 
-// tryParseVideoConfig reads a video tag payload from r. If the tag is a
-// sequence header, it parses the codec configuration record and returns it.
-// Otherwise it skips the payload. Returns nil config for non-sequence tags.
-// The full dataSize bytes are always consumed from r.
-func tryParseVideoConfig(r io.Reader, dataSize int) (*CodecConfig, error) {
-	if dataSize < 5 {
-		return discardAndReturn(r, dataSize)
+// parseVideoConfigIfPresent reads a video tag payload from r. If the tag contains
+// sequence header(s), it parses the codec configuration record(s) and returns
+// them. Otherwise it skips the payload. The full dataSize bytes are always
+// consumed from r.
+//
+// Extended video tag header layout (E-RTMP v2):
+//
+//	Non-multitrack: [IsEx(1)|FrameType(3)|PacketType(4)] [FourCC(4)] [payload...]
+//	Multitrack:     [IsEx(1)|FrameType(3)|PacketType=6(4)] [AvMultitrackType(4)|innerPacketType(4)] [...]
+func parseVideoConfigIfPresent(r io.Reader, dataSize int) ([]CodecConfig, error) {
+	if dataSize < 1 {
+		return nil, nil
 	}
 
-	var header [5]byte
-	if _, err := io.ReadFull(r, header[:]); err != nil {
+	var first [1]byte
+	if _, err := io.ReadFull(r, first[:]); err != nil {
 		return nil, err
 	}
-	remaining := dataSize - 5
+	remaining := dataSize - 1
 
-	isExHeader := header[0]&0x80 != 0
+	isExHeader := first[0]&0x80 != 0
 
 	if isExHeader {
-		packetType := header[0] & 0x0F
-		fourCC := string(header[1:5])
+		packetType := first[0] & 0x0F
 
-		if packetType != packetTypeSequenceStart {
-			return discardAndReturn(r, remaining)
+		if packetType == videoPacketTypeMultitrack {
+			// Multitrack: no FourCC in outer header.
+			// Next byte: [AvMultitrackType(4)][innerVideoPacketType(4)]
+			return parseVideoMultitrackConfigs(r, remaining)
 		}
 
-		configData, err := readRemaining(r, remaining)
-		if err != nil {
+		// Non-multitrack extended: next 4 bytes are the FourCC.
+		if remaining < 4 {
+			_, err := io.CopyN(io.Discard, r, int64(remaining))
 			return nil, err
 		}
+		var fourCCBytes [4]byte
+		if _, err := io.ReadFull(r, fourCCBytes[:]); err != nil {
+			return nil, err
+		}
+		remaining -= 4
+		fourCC := string(fourCCBytes[:])
 
-		fields := parseVideoConfigByFourCC(fourCC, configData)
-		return &CodecConfig{TrackType: "video", Codec: fourCC, Fields: fields}, nil
+		if packetType == packetTypeSequenceStart {
+			configData, err := readRemaining(r, remaining)
+			if err != nil {
+				return nil, err
+			}
+			fields := parseVideoConfigByFourCC(fourCC, configData)
+			return []CodecConfig{{TrackType: "video", Codec: fourCC, Fields: fields}}, nil
+		}
+
+		_, err := io.CopyN(io.Discard, r, int64(remaining))
+		return nil, err
 	}
 
-	// Legacy video.
-	codecID := header[0] & 0x0F
+	// Legacy video: [FrameType(4)|CodecID(4)] [AvcPacketType(1)] [CTO(3)] [payload...]
+	codecID := first[0] & 0x0F
 	if codecID == videoCodecIDAVC {
-		avcPacketType := header[1]
-		// header[2..4] = CompositionTimeOffset (skip)
-		if avcPacketType == 0 {
+		// Need AvcPacketType + CompositionTimeOffset (4 bytes total).
+		if remaining < 4 {
+			_, err := io.CopyN(io.Discard, r, int64(remaining))
+			return nil, err
+		}
+		var avcHeader [4]byte
+		if _, err := io.ReadFull(r, avcHeader[:]); err != nil {
+			return nil, err
+		}
+		remaining -= 4
+		if avcHeader[0] == 0 { // AvcPacketType == 0 → sequence header
 			configData, err := readRemaining(r, remaining)
 			if err != nil {
 				return nil, err
 			}
 			fields := parseAVCConfig(configData)
-			return &CodecConfig{TrackType: "video", Codec: "avc1", Fields: fields}, nil
+			return []CodecConfig{{TrackType: "video", Codec: "avc1", Fields: fields}}, nil
 		}
 	}
 
-	return discardAndReturn(r, remaining)
+	_, err := io.CopyN(io.Discard, r, int64(remaining))
+	return nil, err
 }
 
-// tryParseAudioConfig reads an audio tag payload from r. If the tag is a
+// parseVideoMultitrackConfigs parses a VideoPacketTypeMultitrack payload and
+// returns any sequence-start codec configs found within it.
+//
+// Per E-RTMP v2 spec, after the outer 1-byte header the multitrack payload is:
+//
+//	[AvMultitrackType(4)|innerVideoPacketType(4)]  — 1 byte
+//	if avType != ManyTracksManyCodecs: [shared FourCC (4)]
+//	then per-track: see inline comments below.
+func parseVideoMultitrackConfigs(r io.Reader, remaining int) ([]CodecConfig, error) {
+	if remaining < 1 {
+		return nil, nil
+	}
+	var typeByte [1]byte
+	if _, err := io.ReadFull(r, typeByte[:]); err != nil {
+		return nil, err
+	}
+	remaining--
+	avType := int(typeByte[0] >> 4)
+	innerPacketType := byte(typeByte[0] & 0x0F)
+
+	discard := func(n int) error {
+		_, err := io.CopyN(io.Discard, r, int64(n))
+		return err
+	}
+
+	switch avType {
+	case avMultitrackOneTrack, avMultitrackManyTracks:
+		// Shared codec: read FourCC once.
+		if remaining < 4 {
+			return nil, discard(remaining)
+		}
+		var fourCCBytes [4]byte
+		if _, err := io.ReadFull(r, fourCCBytes[:]); err != nil {
+			return nil, err
+		}
+		remaining -= 4
+		fourCC := string(fourCCBytes[:])
+
+		if avType == avMultitrackOneTrack {
+			// OneTrack: [TrackID (1)] [payload (rest)]
+			if remaining < 1 {
+				return nil, nil
+			}
+			var trackID [1]byte
+			if _, err := io.ReadFull(r, trackID[:]); err != nil {
+				return nil, err
+			}
+			remaining--
+			if innerPacketType != packetTypeSequenceStart {
+				return nil, discard(remaining)
+			}
+			configData, err := readRemaining(r, remaining)
+			if err != nil {
+				return nil, err
+			}
+			fields := parseVideoConfigByFourCC(fourCC, configData)
+			return []CodecConfig{{TrackType: "video", Codec: fourCC, Fields: fields}}, nil
+		}
+
+		// ManyTracks: repeated [TrackID (1)] [SizeOfVideoData (3)] [payload]
+		var configs []CodecConfig
+		for remaining >= 4 {
+			var chunk [4]byte
+			if _, err := io.ReadFull(r, chunk[:]); err != nil {
+				return nil, err
+			}
+			remaining -= 4
+			chunkSize := int(chunk[1])<<16 | int(chunk[2])<<8 | int(chunk[3])
+			if chunkSize > remaining {
+				return configs, discard(remaining)
+			}
+			if innerPacketType == packetTypeSequenceStart {
+				configData, err := readRemaining(r, chunkSize)
+				if err != nil {
+					return nil, err
+				}
+				fields := parseVideoConfigByFourCC(fourCC, configData)
+				configs = append(configs, CodecConfig{TrackType: "video", Codec: fourCC, Fields: fields})
+			} else {
+				if err := discard(chunkSize); err != nil {
+					return nil, err
+				}
+			}
+			remaining -= chunkSize
+		}
+		return configs, discard(remaining)
+
+	case avMultitrackManyTracksManyCodecs:
+		// Each track has its own FourCC: repeated [FourCC (4)] [TrackID (1)] [SizeOfVideoData (3)] [payload]
+		var configs []CodecConfig
+		for remaining >= 8 {
+			var chunk [8]byte
+			if _, err := io.ReadFull(r, chunk[:]); err != nil {
+				return nil, err
+			}
+			remaining -= 8
+			fourCC := string(chunk[0:4])
+			chunkSize := int(chunk[5])<<16 | int(chunk[6])<<8 | int(chunk[7])
+			if chunkSize > remaining {
+				return configs, discard(remaining)
+			}
+			if innerPacketType == packetTypeSequenceStart {
+				configData, err := readRemaining(r, chunkSize)
+				if err != nil {
+					return nil, err
+				}
+				fields := parseVideoConfigByFourCC(fourCC, configData)
+				configs = append(configs, CodecConfig{TrackType: "video", Codec: fourCC, Fields: fields})
+			} else {
+				if err := discard(chunkSize); err != nil {
+					return nil, err
+				}
+			}
+			remaining -= chunkSize
+		}
+		return configs, discard(remaining)
+
+	default:
+		return nil, discard(remaining)
+	}
+}
+
+// parseAudioConfigIfPresent reads an audio tag payload from r. If the tag is a
 // sequence header, it parses the codec configuration record and returns it.
 // Otherwise it skips the payload. The full dataSize bytes are always consumed.
-func tryParseAudioConfig(r io.Reader, dataSize int) (*CodecConfig, error) {
+func parseAudioConfigIfPresent(r io.Reader, dataSize int) ([]CodecConfig, error) {
 	if dataSize < 2 {
 		return discardAndReturn(r, dataSize)
 	}
@@ -124,7 +286,7 @@ func tryParseAudioConfig(r io.Reader, dataSize int) (*CodecConfig, error) {
 		}
 
 		fields := parseAudioConfigByFourCC(fourCC, configData)
-		return &CodecConfig{TrackType: "audio", Codec: fourCC, Fields: fields}, nil
+		return []CodecConfig{{TrackType: "audio", Codec: fourCC, Fields: fields}}, nil
 	}
 
 	if soundFormat == soundFormatAAC {
@@ -142,7 +304,7 @@ func tryParseAudioConfig(r io.Reader, dataSize int) (*CodecConfig, error) {
 			configData = append(configData, header[2:headerSize]...)
 			configData = append(configData, extraData...)
 			fields := parseAACConfig(configData)
-			return &CodecConfig{TrackType: "audio", Codec: "mp4a", Fields: fields}, nil
+			return []CodecConfig{{TrackType: "audio", Codec: "mp4a", Fields: fields}}, nil
 		}
 	}
 
@@ -949,21 +1111,38 @@ func parseAV1SequenceHeaderMaxFrameSize(payload []byte) (width int, height int, 
 // --- VP9 ---
 
 func parseVP9Config(data []byte) []ConfigField {
-	if len(data) < 8 {
+	// VPCodecConfigurationRecord is carried in a FullBox payload:
+	// [fullbox_version(1)][fullbox_flags(3)]
+	// [profile(1)][level(1)][bitDepth/chroma/fullRange(1)]
+	// [colourPrimaries(1)][transferCharacteristics(1)][matrixCoefficients(1)]
+	// [codecInitializationDataSize(2)][codecInitializationData(N)]
+	if len(data) < 12 {
 		return []ConfigField{{Name: "error", Value: "truncated"}}
 	}
-	profile := int(data[0])
-	level := int(data[1])
-	bitDepth := int(data[2] >> 4)
-	chromaSubsampling := int((data[2] >> 1) & 0x07)
-	videoFullRangeFlag := int(data[2] & 0x01)
+	fullboxVersion := int(data[0])
+	vpcc := data[4:]
+
+	profile := int(vpcc[0])
+	level := int(vpcc[1])
+	bitDepth := int(vpcc[2] >> 4)
+	chromaSubsampling := int((vpcc[2] >> 1) & 0x07)
+	videoFullRangeFlag := int(vpcc[2] & 0x01)
+	colourPrimaries := int(vpcc[3])
+	transferCharacteristics := int(vpcc[4])
+	matrixCoefficients := int(vpcc[5])
+	codecInitializationDataSize := int(binary.BigEndian.Uint16(vpcc[6:8]))
 
 	return []ConfigField{
+		{Name: "fullbox_version", Value: fullboxVersion},
 		{Name: "profile", Value: profile},
 		{Name: "level", Value: level},
 		{Name: "bit_depth", Value: bitDepth},
 		{Name: "chroma_subsampling", Value: chromaSubsampling},
 		{Name: "videoFullRangeFlag", Value: videoFullRangeFlag},
+		{Name: "colour_primaries", Value: colourPrimaries},
+		{Name: "transfer_characteristics", Value: transferCharacteristics},
+		{Name: "matrix_coefficients", Value: matrixCoefficients},
+		{Name: "codec_initialization_data_size", Value: codecInitializationDataSize},
 	}
 }
 
@@ -1069,7 +1248,7 @@ func printCodecConfig(cfg CodecConfig) {
 
 // --- Helpers ---
 
-func discardAndReturn(r io.Reader, n int) (*CodecConfig, error) {
+func discardAndReturn(r io.Reader, n int) ([]CodecConfig, error) {
 	if n > 0 {
 		if _, err := io.CopyN(io.Discard, r, int64(n)); err != nil {
 			return nil, err

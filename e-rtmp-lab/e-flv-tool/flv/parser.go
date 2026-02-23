@@ -122,31 +122,25 @@ func InfoFLV(inputPath string, jsonOutput bool, verbose bool) error {
 		switch tagType {
 		case TagTypeVideo:
 			videoTags++
-			cfg, err := tryParseVideoConfig(r, int(dataSize))
+			cfgs, err := parseVideoConfigIfPresent(r, int(dataSize))
 			if err != nil {
 				return fmt.Errorf("reading video tag payload: %w", err)
 			}
-			if cfg != nil {
-				codecConfigs = append(codecConfigs, *cfg)
-			}
+			codecConfigs = append(codecConfigs, cfgs...)
 		case TagTypeAudio:
 			audioTags++
-			cfg, err := tryParseAudioConfig(r, int(dataSize))
+			cfgs, err := parseAudioConfigIfPresent(r, int(dataSize))
 			if err != nil {
 				return fmt.Errorf("reading audio tag payload: %w", err)
 			}
-			if cfg != nil {
-				codecConfigs = append(codecConfigs, *cfg)
-			}
+			codecConfigs = append(codecConfigs, cfgs...)
 		case TagTypeScript:
 			scriptTags++
 			props, err := parseScriptTag(r, int(dataSize))
 			if err != nil {
 				return fmt.Errorf("reading script tag payload: %w", err)
 			}
-			if props != nil {
-				metadataBlocks = append(metadataBlocks, props)
-			}
+			metadataBlocks = append(metadataBlocks, props)
 		default:
 			otherTags++
 			if _, err := io.CopyN(io.Discard, r, dataSize); err != nil {
@@ -199,7 +193,7 @@ func InfoFLV(inputPath string, jsonOutput bool, verbose bool) error {
 
 // parseScriptTag reads dataSize bytes from r and, if the first AMF0 value is
 // the string "onMetaData", returns the properties of the second AMF0 value.
-// Returns nil properties (no error) if this is not an onMetaData tag.
+// Returns an empty slice (no error) if this is not an onMetaData tag.
 func parseScriptTag(r io.Reader, dataSize int) ([]AMF0Property, error) {
 	payload := make([]byte, dataSize)
 	if _, err := io.ReadFull(r, payload); err != nil {
@@ -209,23 +203,23 @@ func parseScriptTag(r io.Reader, dataSize int) ([]AMF0Property, error) {
 	// First AMF0 value should be a string.
 	name, offset, err := parseAMF0Value(payload, 0)
 	if err != nil {
-		return nil, nil // not parseable, skip
+		return []AMF0Property{}, nil // not parseable, skip
 	}
 
 	nameStr, ok := name.(string)
 	if !ok || nameStr != "onMetaData" {
-		return nil, nil
+		return []AMF0Property{}, nil
 	}
 
 	// Second AMF0 value should be an object or ECMA array.
 	value, _, err := parseAMF0Value(payload, offset)
 	if err != nil {
-		return nil, nil
+		return []AMF0Property{}, nil
 	}
 
 	props, ok := value.([]AMF0Property)
 	if !ok {
-		return nil, nil
+		return []AMF0Property{}, nil
 	}
 	return props, nil
 }
