@@ -339,80 +339,6 @@ func parseAudioConfigByFourCC(fourCC string, data []byte) []ConfigField {
 	}
 }
 
-// --- SPS bit reader (H.264 / H.265 RBSP parsing) ---
-
-type spsBitReader struct {
-	data   []byte
-	bitPos int // global bit index, MSB-first
-}
-
-func newSPSBitReader(data []byte) *spsBitReader {
-	return &spsBitReader{data: data}
-}
-
-func (r *spsBitReader) readBit() (uint64, bool) {
-	if r.bitPos >= len(r.data)*8 {
-		return 0, false
-	}
-	b := uint64((r.data[r.bitPos/8] >> (7 - uint(r.bitPos%8))) & 1)
-	r.bitPos++
-	return b, true
-}
-
-func (r *spsBitReader) readBits(n int) (uint64, bool) {
-	var v uint64
-	for i := 0; i < n; i++ {
-		b, ok := r.readBit()
-		if !ok {
-			return 0, false
-		}
-		v = (v << 1) | b
-	}
-	return v, true
-}
-
-func (r *spsBitReader) readUE() (uint64, bool) {
-	leadingZeros := 0
-	for {
-		b, ok := r.readBit()
-		if !ok {
-			return 0, false
-		}
-		if b == 1 {
-			break
-		}
-		leadingZeros++
-		if leadingZeros > 31 {
-			return 0, false
-		}
-	}
-	if leadingZeros == 0 {
-		return 0, true
-	}
-	suffix, ok := r.readBits(leadingZeros)
-	if !ok {
-		return 0, false
-	}
-	return (1<<uint(leadingZeros) - 1) + suffix, true
-}
-
-func (r *spsBitReader) readSE() (int64, bool) {
-	v, ok := r.readUE()
-	if !ok {
-		return 0, false
-	}
-	if v == 0 {
-		return 0, true
-	}
-	if v%2 == 1 {
-		return int64((v + 1) / 2), true
-	}
-	return -int64(v / 2), true
-}
-
-func (r *spsBitReader) skipUE() bool { _, ok := r.readUE(); return ok }
-func (r *spsBitReader) skipSE() bool { _, ok := r.readSE(); return ok }
-
 // removeEmulationPreventionBytes strips RBSP emulation prevention bytes
 // (0x00 0x00 0x03 → 0x00 0x00) per ISO 14496-10 / ISO 23008-2.
 func removeEmulationPreventionBytes(data []byte) []byte {
@@ -440,7 +366,7 @@ func parseAVCSPSResolution(nalUnit []byte) (width, height int, ok bool) {
 	}
 	profileIDC := int(rbsp[0])
 	// rbsp[1] = constraint flags, rbsp[2] = level_idc
-	br := newSPSBitReader(rbsp[3:])
+	br := newH26xBitReader(rbsp[3:])
 
 	if !br.skipUE() { // seq_parameter_set_id
 		return 0, 0, false
@@ -599,7 +525,7 @@ func parseAVCSPSResolution(nalUnit []byte) (width, height int, ok bool) {
 }
 
 // skipHEVCProfileTierLevel skips the profile_tier_level() structure (H.265 / ISO 23008-2).
-func skipHEVCProfileTierLevel(br *spsBitReader, profilePresentFlag bool, maxNumSubLayersMinus1 int) bool {
+func skipHEVCProfileTierLevel(br *h26xBitReader, profilePresentFlag bool, maxNumSubLayersMinus1 int) bool {
 	if profilePresentFlag {
 		// profile_space(2) + tier(1) + profile_idc(5) + compat_flags(32) +
 		// progressive/interlaced/non_packed/frame_only flags(4) + reserved(44) = 88 bits
@@ -653,7 +579,7 @@ func parseHEVCSPSResolution(nalUnit []byte) (width, height int, ok bool) {
 		return 0, 0, false
 	}
 	rbsp := removeEmulationPreventionBytes(nalUnit[2:]) // skip 2-byte NAL header
-	br := newSPSBitReader(rbsp)
+	br := newH26xBitReader(rbsp)
 
 	if _, ok2 := br.readBits(4); !ok2 { // sps_video_parameter_set_id
 		return 0, 0, false
@@ -858,59 +784,6 @@ func parseAV1Config(data []byte) []ConfigField {
 	}
 
 	return fields
-}
-
-type av1BitReader struct {
-	data    []byte
-	bytePos int
-	bitPos  uint8 // 0..7, MSB-first
-}
-
-func newAV1BitReader(data []byte) *av1BitReader {
-	return &av1BitReader{data: data, bitPos: 0}
-}
-
-func (br *av1BitReader) readBit() (uint8, bool) {
-	if br.bytePos >= len(br.data) {
-		return 0, false
-	}
-	b := br.data[br.bytePos]
-	bit := (b >> (7 - br.bitPos)) & 0x01
-	br.bitPos++
-	if br.bitPos == 8 {
-		br.bitPos = 0
-		br.bytePos++
-	}
-	return bit, true
-}
-
-func (br *av1BitReader) readBits(n int) (uint64, bool) {
-	if n < 0 || n > 64 {
-		return 0, false
-	}
-	var v uint64
-	for i := 0; i < n; i++ {
-		bit, ok := br.readBit()
-		if !ok {
-			return 0, false
-		}
-		v = (v << 1) | uint64(bit)
-	}
-	return v, true
-}
-
-func readULEB128(data []byte) (value uint64, bytesRead int, ok bool) {
-	var shift uint
-	for i := 0; i < len(data) && i < 10; i++ {
-		b := data[i]
-		value |= uint64(b&0x7F) << shift
-		bytesRead++
-		if (b & 0x80) == 0 {
-			return value, bytesRead, true
-		}
-		shift += 7
-	}
-	return 0, 0, false
 }
 
 func parseAV1MaxFrameSizeFromConfigOBUs(configOBUs []byte) (width int, height int, ok bool) {
