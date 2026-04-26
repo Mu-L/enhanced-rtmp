@@ -408,6 +408,7 @@ export class FLVDemuxer {
     private static readonly _mpegAudioL3BitRateTable = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, -1] as const;
 
     private _videoTracksById: Map<number, VideoTrack> = new Map();
+    private _currentVideoTrackId: number | undefined = undefined;
     private _audioTrack: AudioTrack = { type: TrackType.Audio, id: 2, sequenceNumber: 0, frames: [], length: 0 };
 
     constructor(probeData: FlvProbeSuccess, config: ConfigOptions, remuxer: Remuxer) {
@@ -584,6 +585,28 @@ export class FLVDemuxer {
         return this._getOrCreateVideoTrack(0);
     }
 
+    private _getCurrentVideoTrack(): VideoTrack {
+        if (this._currentVideoTrackId !== undefined) {
+            return this._getOrCreateVideoTrack(this._currentVideoTrackId);
+        }
+        return { type: TrackType.Video, id: -1, sequenceNumber: 0, frames: [], length: 0 };
+    }
+
+    private _dispatchVideoTrackMetadata(meta: VideoMetadata): void {
+        if (this._currentVideoTrackId === undefined) {
+            this._currentVideoTrackId = meta.trackId;
+        }
+        if (meta.trackId === this._currentVideoTrackId) {
+            if (this._remuxer.isVideoMetadataDispatched) {
+                // Non-initial metadata, force dispatch (or flush) parsed frames to remuxer
+                this._onTrackData(this._audioTrack, this._getCurrentVideoTrack());
+            }
+            // notify new metadata
+            this._onTrackMetadata(meta);
+        }
+        this._onVideoTracksDiscovered([...this._videoMetadataByTrackId.values()]);
+    }
+
     // function parseChunks(chunk: ArrayBuffer, byteStart: number): number;
     parseChunks(chunk: ArrayBuffer, byteStart: number) : number {
         let offset = 0;
@@ -679,7 +702,7 @@ export class FLVDemuxer {
         }
 
         // dispatch parsed frames to consumer (typically, the remuxer)
-        this._onTrackData(this._audioTrack, this._getDefaultVideoTrack());
+        this._onTrackData(this._audioTrack, this._getCurrentVideoTrack());
 
         return offset;  // consumed bytes, just equals latest offset index
     }
@@ -892,7 +915,7 @@ export class FLVDemuxer {
 
                 if (this._remuxer.isAudioMetadataDispatched) {
                     // Non-initial metadata, force dispatch (or flush) parsed frames to remuxer
-                    this._onTrackData(this._audioTrack, this._getDefaultVideoTrack());
+                    this._onTrackData(this._audioTrack, this._getCurrentVideoTrack());
                 } 
                 // notify new metadata
                 this._onTrackMetadata(meta);
@@ -1282,7 +1305,7 @@ export class FLVDemuxer {
 
         if (this._remuxer.isAudioMetadataDispatched) {
             // Non-initial metadata, force dispatch (or flush) parsed frames to remuxer
-            this._onTrackData(this._audioTrack, this._getDefaultVideoTrack());
+            this._onTrackData(this._audioTrack, this._getCurrentVideoTrack());
         }
 
         // notify new metadata
@@ -1397,7 +1420,7 @@ export class FLVDemuxer {
 
         if (this._remuxer.isAudioMetadataDispatched) {
             // Non-initial metadata, force dispatch (or flush) parsed frames to remuxer
-            this._onTrackData(this._audioTrack, this._getDefaultVideoTrack());
+            this._onTrackData(this._audioTrack, this._getCurrentVideoTrack());
         }
         // notify new metadata
         this._onTrackMetadata(meta);
@@ -1854,13 +1877,7 @@ export class FLVDemuxer {
         meta.codecConfig.set(new Uint8Array(arrayBuffer, dataOffset, dataSize), 0);
         Log.v(FLVDemuxer.TAG, 'Parsed AVCDecoderConfigurationRecord');
 
-        if (this._remuxer.isVideoMetadataDispatched) {
-            // Non-initial metadata, force dispatch (or flush) parsed frames to remuxer
-            this._onTrackData(this._audioTrack, this._getDefaultVideoTrack());
-        }
-        // notify new metadata
-        this._onTrackMetadata(meta);
-        this._onVideoTracksDiscovered([...this._videoMetadataByTrackId.values()]);
+        this._dispatchVideoTrackMetadata(meta);
     }
 
     // HEVCDecoderConfigurationRecord must precede HEVC coded frames.
@@ -1989,13 +2006,7 @@ export class FLVDemuxer {
         meta.codecConfig.set(new Uint8Array(arrayBuffer, dataOffset, dataSize), 0);
         Log.v(FLVDemuxer.TAG, 'Parsed HEVCDecoderConfigurationRecord');
 
-        if (this._remuxer.isVideoMetadataDispatched) {
-            // Non-initial metadata, force dispatch (or flush) parsed frames to remuxer
-            this._onTrackData(this._audioTrack, this._getDefaultVideoTrack());
-        }
-        // notify new metadata
-        this._onTrackMetadata(meta);
-        this._onVideoTracksDiscovered([...this._videoMetadataByTrackId.values()]);
+        this._dispatchVideoTrackMetadata(meta);
     }
 
     // AV1CodecConfigurationRecord must precede AV1 coded frames.
@@ -2096,17 +2107,14 @@ export class FLVDemuxer {
         }
         meta.codecConfig = new Uint8Array(arrayBuffer, dataOffset, dataSize).slice();
 
-        if (this._remuxer.isVideoMetadataDispatched) {
-            // Non-initial metadata, force dispatch (or flush) parsed frames to remuxer
-            this._onTrackData(this._audioTrack, this._getDefaultVideoTrack());
-        }
-        // notify new metadata
-        this._onTrackMetadata(meta);
-        this._onVideoTracksDiscovered([...this._videoMetadataByTrackId.values()]);
+        this._dispatchVideoTrackMetadata(meta);
         Log.v(FLVDemuxer.TAG, `Parsed AV1 metadata: ${JSON.stringify(config)}`);
     }
 
     private _parseAvcVideoData(arrayBuffer: ArrayBuffer, dataOffset: number, dataSize: number, tagTimestamp: number, tagPosition: number, frameType: VideoFrameType, cts: number, track: VideoTrack) {
+        if (this._currentVideoTrackId !== undefined && track.id !== this._currentVideoTrackId) {
+            return;
+        }
         let v = new DataView(arrayBuffer, dataOffset, dataSize);
 
         let units: VideoUnit[] = [], length = 0;
@@ -2161,6 +2169,9 @@ export class FLVDemuxer {
     }
 
     private _parseHevcVideoData(arrayBuffer: ArrayBuffer, dataOffset: number, dataSize: number, tagTimestamp: number, tagPosition: number, frameType: number, cts: number, track: VideoTrack) {
+        if (this._currentVideoTrackId !== undefined && track.id !== this._currentVideoTrackId) {
+            return;
+        }
         let v = new DataView(arrayBuffer, dataOffset, dataSize);
 
         let units: VideoUnit[] = [], length = 0;
@@ -2216,6 +2227,9 @@ export class FLVDemuxer {
     }
 
     private _parseAv1VideoData(arrayBuffer: ArrayBuffer, dataOffset: number, dataSize: number, tagTimestamp: number, tagPosition: number, frameType: VideoFrameType, cts: number, track: VideoTrack) {
+        if (this._currentVideoTrackId !== undefined && track.id !== this._currentVideoTrackId) {
+            return;
+        }
         let units: VideoUnit[] = [];
         let length = 0;
         let dts = this._timestampBase + tagTimestamp;
@@ -2417,17 +2431,14 @@ export class FLVDemuxer {
         meta.codecConfig = new Uint8Array(arrayBuffer, dataOffset, dataSize).slice();
         Log.v(FLVDemuxer.TAG, `VP9 codecConfig: ${Array.from(meta.codecConfig).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
 
-        if (this._remuxer.isVideoMetadataDispatched) {
-            // Non-initial metadata, force dispatch (or flush) parsed frames to remuxer
-            this._onTrackData(this._audioTrack, this._getDefaultVideoTrack());
-        }
-        // notify new metadata
-        this._onTrackMetadata(meta);
-        this._onVideoTracksDiscovered([...this._videoMetadataByTrackId.values()]);
+        this._dispatchVideoTrackMetadata(meta);
         Log.v(FLVDemuxer.TAG, `Parsed VP9 codec configuration record: profile=${meta.profile} level=${meta.level}`);
     }
 
     private _parseVp9VideoData(arrayBuffer: ArrayBuffer, dataOffset: number, dataSize: number, tagTimestamp: number, tagPosition: number, frameType: VideoFrameType, cts: number, track: VideoTrack) {
+        if (this._currentVideoTrackId !== undefined && track.id !== this._currentVideoTrackId) {
+            return;
+        }
         let length = 0;
         let units: VideoUnit[] = [];
         let dts = this._timestampBase + tagTimestamp;

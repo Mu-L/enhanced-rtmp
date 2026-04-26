@@ -552,7 +552,15 @@ export class MP4Remuxer extends Remuxer {
     }
 
     _remuxVideo(videoTrack: VideoTrack, force: boolean) {
-        if (!this._videoMeta || videoTrack.frames.length === 0) {
+        // Require at least 2 frames before remuxing (unless forced, e.g. flushStashedFrames).
+        // MP4 computes each frame's duration as nextFrame.dts - currentFrame.dts, so the stash
+        // mechanism always pops the last frame and holds it for the next batch as the "next frame"
+        // reference. With only 1 frame there is nothing to pop/stash, breaking the DTS chain.
+        if (videoTrack.frames.length <= 1 && !force) {
+            return;
+        }
+        if (!this._videoMeta) {
+            Log.w(MP4Remuxer.TAG, '_remuxVideo: VideoData received before CodecConfigurationRecord');
             return;
         }
 
@@ -561,12 +569,6 @@ export class MP4Remuxer extends Remuxer {
         let dtsCorrection = undefined;
         let firstDts = -1, lastDts = -1;
         let firstPts = -1, lastPts = -1;
-              
-        if (frames.length === 1 && !force) {
-            // If [frame count in current batch] === 1 && (force != true)
-            // Ignore and keep in demuxer's queue
-            return;
-        }  // else if (force === true) do remux
 
         let offset = 8;
         let mdatbox = null;
