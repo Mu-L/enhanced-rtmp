@@ -2234,6 +2234,7 @@ export class FLVDemuxer {
         let length = 0;
         let dts = this._timestampBase + tagTimestamp;
         let keyframe = (frameType === VideoFrameType.KeyFrame);
+        const rawData = new Uint8Array(arrayBuffer, dataOffset, dataSize);
 
         if (keyframe) {
             const meta = this._videoMetadataByTrackId.get(track.id);
@@ -2242,7 +2243,7 @@ export class FLVDemuxer {
                 return;
             }
 
-            const av1Metadata: AV1Metadata | undefined = AV1OBUParser.parseOBUs(new Uint8Array(arrayBuffer, dataOffset, dataSize), meta.av1Extra);
+            const av1Metadata: AV1Metadata | undefined = AV1OBUParser.parseOBUs(rawData, meta.av1Extra);
             if (!av1Metadata) {
                 this._onError(DemuxErrors.FORMAT_ERROR, 'Flv: Invalid AV1 VideoData');
                 return;
@@ -2265,7 +2266,7 @@ export class FLVDemuxer {
         length = dataSize;
         units.push({
             type: Av1ObuType.OBU_RESERVED_0,
-            data: new Uint8Array(arrayBuffer, dataOffset, dataSize)
+            data: rawData
         });
 
         const av1Frame: VideoFrame = {
@@ -2276,7 +2277,7 @@ export class FLVDemuxer {
             dts: dts,
             cts: cts,
             pts: (dts + cts),
-            rawData: new Uint8Array(arrayBuffer, dataOffset, dataSize)
+            rawData: rawData
         };
           
         track.frames.push(av1Frame);
