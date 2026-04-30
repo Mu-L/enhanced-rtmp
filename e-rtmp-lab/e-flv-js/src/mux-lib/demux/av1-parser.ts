@@ -161,19 +161,24 @@ class AV1OBUParser {
     }
 
     /**
-     * Extracts the payload from an AV1 OBU by skipping the OBU header.
-     * @param obuData - Complete OBU data including header
-     * @returns OBU payload without headers
+     * Strips leading AV1 framing OBUs from remux input when present.
+     * For a leading OBU_TEMPORAL_DELIMITER, this removes the full OBU
+     * (header, optional extension, optional size field, and payload)
+     * and returns the remaining bytes.
+     * @param obuData - AV1 data that may begin with a framing OBU
+     * @returns AV1 bytes after leading framing has been removed
      */
-    static extractOBUPayload(obuData: Uint8Array): Uint8Array {
+    static stripLeadingObuFraming(obuData: Uint8Array): Uint8Array {
+        if (obuData.length === 0) return obuData;
+
         function skipFrameBoundaryMarkers(obuData: Uint8Array): Uint8Array {
-            let i = 0;
-            let obu_forbidden_bit = ((obuData[i] & 0x80) >> 7) !== 0;
-            let obu_type = (obuData[i] & 0x78) >> 3 as Av1ObuType;
-            let extension_flag = (obuData[i] & 0x04) !== 0;
-            let has_size_field = (obuData[i] & 0x02) !== 0;
-            let reserved_bit = (obuData[i] & 0x01) !== 0;
-            i += 1; // Move past the first byte of the OBU header
+            let offset = 0;
+            let obu_forbidden_bit = ((obuData[offset] & 0x80) >> 7) !== 0;
+            let obu_type = (obuData[offset] & 0x78) >> 3 as Av1ObuType;
+            let extension_flag = (obuData[offset] & 0x04) !== 0;
+            let has_size_field = (obuData[offset] & 0x02) !== 0;
+            let reserved_bit = (obuData[offset] & 0x01) !== 0;
+            offset += 1; // Move past the first byte of the OBU header
 
             if (obu_forbidden_bit) {
                 Log.e(TAG, 'Invalid OBU header: forbidden bit is set');
@@ -181,38 +186,23 @@ class AV1OBUParser {
 
             // Skip extension header if present (1 byte)
             if (extension_flag) {
-                i += 1;
+                offset += 1;
                 // Optionally skip reserved bits here
             }
 
-            if (has_size_field && obuData[i] !== 0) {
-                // Parse LEB128 size
+            if (has_size_field) {
                 let size = 0;
                 for (let j = 0; ; j++) {
-                    if (i >= obuData.length) return new Uint8Array(0); // Prevent overflow
-                    let value = obuData[i++];
+                    if (offset >= obuData.length) return new Uint8Array(0); // Prevent overflow
+                    let value = obuData[offset++];
                     size |= (value & 0x7F) << (j * 7);
                     if ((value & 0x80) === 0) { break; }
                 }
-                // Validate bounds
-                Log.v(TAG, `extractOBUPayload() - OBU Type: ${obu_type}; extension_flag: ${extension_flag}; has_size_field: ${has_size_field}; reserved_bit: ${reserved_bit}; headerSize: ${i + size}; obuData.length: ${obuData.length}`);
-                if (i + size > obuData.length) {
-                    Log.e(TAG, 'extractOBUPayload() - Invalid OBU size: exceeds buffer length');
-                    return new Uint8Array(0);
-                }
-                return obuData.subarray(i, i + size);
+                return obuData.subarray(offset + size);
             } else {
-                //Log.v(TAG, `extractOBUPayload() - OBU Type: ${obu_type}; extension_flag: ${extension_flag}; has_size_field: ${has_size_field}; reserved_bit: ${reserved_bit}; headerSize: ${i + 1}; obuData.length: ${obuData.length}`);
-                return obuData.subarray(i + 1);
+                //Log.v(TAG, `stripLeadingObuFraming() - OBU Type: ${obu_type}; extension_flag: ${extension_flag}; has_size_field: ${has_size_field}; reserved_bit: ${reserved_bit}; headerSize: ${offset + 1}; obuData.length: ${obuData.length}`);
+                return obuData.subarray(offset);
             }
-        }
-
-        function skipDuplicateOBUHeaders() {
-           
-        }
-
-        function skipPadding() {
-
         }
 
         let obu_type = (obuData[0] & 0x78) >> 3 as Av1ObuType;

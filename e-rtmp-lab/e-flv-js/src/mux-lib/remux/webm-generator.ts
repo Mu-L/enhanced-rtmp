@@ -503,7 +503,7 @@ export class WebMGenerator {
         header[2] = blockTimecode & 0xff;
         header[3] = isKeyframe ? 0x80 : 0x00;      // Flags: bit 7 is keyframe, bits 1-2 are lacing (set to 0 
         
-        const framePayload = codecType === VideoCodecType.Av1 ? AV1OBUParser.extractOBUPayload(rawData!) : rawData!;
+        const framePayload = codecType === VideoCodecType.Av1 ? AV1OBUParser.stripLeadingObuFraming(rawData!) : rawData!;
         const simpleBlock = encodeElement(EbmlId.SimpleBlock, concatUint8Arrays([header, framePayload]));
         elements.push(simpleBlock);
         //Log.d(WebMGenerator.TAG, `generateVideoCluster() - simpleBlock: key=${isKeyframe}, dts=${dts}, blockTimecode=${blockTimecode}, framePayload.length=${framePayload.length}, simpleBlock.length=${simpleBlock.length}`);
@@ -515,7 +515,7 @@ export class WebMGenerator {
         header[2] = blockTimecode & 0xff;
         header[3] = isKeyframe ? 0x80 : 0x00;      // Flags: bit 7 is keyframe, bits 1-2 are lacing (set to 0)
 
-        const framePayload = codecType === VideoCodecType.Av1 ? AV1OBUParser.extractOBUPayload(rawData!) : rawData!;
+        const framePayload = codecType === VideoCodecType.Av1 ? AV1OBUParser.stripLeadingObuFraming(rawData!) : rawData!;
         const block = encodeElement(EbmlId.Block, concatUint8Arrays([header, framePayload]));
         const blockDuration = encodeElement(EbmlId.BlockDuration, writeUInt(refFrameDuration, 4));
         const blockGroup = encodeElement(EbmlId.BlockGroup, concatUint8Arrays([block, blockDuration]));

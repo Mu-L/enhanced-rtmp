@@ -18,7 +18,8 @@ import { FrameInfo as FrameInfo, MediaSegmentInfo, MediaSegmentInfoList } from '
 import { IllegalStateException } from '../utils/exception.js';
 import { MSEInitSegment, MSEMediaSegment, Remuxer, SegmentKind, TrackType } from './remuxer.js';
 import { Callback, assertCallback } from '../utils/common.js';
-import { AudioMetadata, AudioTrack, AudioFrame, VideoMetadata, VideoTrack, VideoFrame } from '../demux/flv-demuxer.js';
+import { AudioMetadata, AudioTrack, AudioFrame, VideoMetadata, VideoTrack, VideoFrame, VideoCodecType } from '../demux/flv-demuxer.js';
+import AV1OBUParser from '../demux/av1-parser.js';
 import { ConfigOptions } from '../config.js';
 
 export class MP4Remuxer extends Remuxer {
@@ -596,6 +597,7 @@ export class MP4Remuxer extends Remuxer {
             this._videoStashedLastFrame = lastFrame;
         }
 
+        const isAv1 = this._videoMeta.codecType === VideoCodecType.Av1;
 
         let firstFrameOriginalDts = frames[0].dts - this._dtsBase;
 
@@ -622,6 +624,10 @@ export class MP4Remuxer extends Remuxer {
 
         let info = new MediaSegmentInfo();
         let mp4Frames: any[] = [];  // !!@ change from any to a more specific type
+
+        // For AV1, strip leading framing OBUs from each unit before muxing so the stored
+        // frame size and mdat byte count match the bytes actually written.
+        let actualMdatDataBytes = 0;
 
         // Correct dts for each frame, and calculate frame duration. Then output to mp4Frames
         for (let i = 0; i < frames.length; i++) {
@@ -659,12 +665,25 @@ export class MP4Remuxer extends Remuxer {
                 info.appendSyncPoint(syncPoint);
             }
 
+            let frameUnits = frame.units;
+            let frameSize = frame.length;
+            if (isAv1) {
+                let processedSize = 0;
+                frameUnits = frame.units.map((unit) => {
+                    const processedData = AV1OBUParser.stripLeadingObuFraming(unit.data);
+                    processedSize += processedData.byteLength;
+                    return { type: unit.type, data: processedData };
+                });
+                frameSize = processedSize;
+                actualMdatDataBytes += processedSize;
+            }
+
             mp4Frames.push({
                 dts: dts,
                 pts: pts,
                 cts: cts,
-                units: frame.units,
-                size: frame.length,
+                units: frameUnits,
+                size: frameSize,
                 isKeyframe: isKeyframe,
                 duration: frameDuration,
                 originalDts: originalDts,
