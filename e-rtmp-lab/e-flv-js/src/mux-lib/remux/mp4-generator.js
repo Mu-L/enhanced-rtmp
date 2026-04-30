@@ -55,6 +55,15 @@ class MP4 {
             0x6D, 0x70, 0x34, 0x31   // 'mp41'
         ]);
 
+        constants.FTYP_AV1 = new Uint8Array([
+            0x69, 0x73, 0x6F, 0x6D,  // major_brand: isom
+            0x00, 0x00, 0x00, 0x01,  // minor_version: 0x01
+            0x69, 0x73, 0x6F, 0x6D,  // 'isom'
+            0x69, 0x73, 0x6F, 0x36,  // 'iso6'
+            0x61, 0x76, 0x30, 0x31,  // 'av01'
+            0x6D, 0x70, 0x34, 0x31   // 'mp41'
+        ]);
+
         constants.STSD_PREFIX = new Uint8Array([
             0x00, 0x00, 0x00, 0x00,  // version(0) + flags
             0x00, 0x00, 0x00, 0x01   // entry_count
@@ -150,7 +159,12 @@ class MP4 {
 
     // emit ftyp & moov
     static generateInitSegment(meta) {
-        let ftyp = MP4.box(MP4.types.ftyp, MP4.constants.FTYP);
+        let ftypBody = MP4.constants.FTYP;
+        if (meta.type === 'video' && meta.codec && meta.codec.startsWith('av01')) {
+            ftypBody = MP4.constants.FTYP_AV1;
+        }
+
+        let ftyp = MP4.box(MP4.types.ftyp, ftypBody);
         let moov = MP4.moov(meta);
 
         let result = new Uint8Array(ftyp.byteLength + moov.byteLength);
@@ -892,12 +906,26 @@ class MP4 {
     static trun(track, offset) {
         let frames = track.frames || [];
         let frameCount = frames.length;
-        let dataSize = 12 + 16 * frameCount;
+        let hasCompositionOffsets = false;
+        for (let i = 0; i < frameCount; i++) {
+            if (frames[i].cts !== 0) {
+                hasCompositionOffsets = true;
+                break;
+            }
+        }
+
+        let sampleFieldBytes = hasCompositionOffsets ? 16 : 12;
+        let dataSize = 12 + sampleFieldBytes * frameCount;
         let data = new Uint8Array(dataSize);
         offset += 8 + dataSize;
 
+        let trunFlags = hasCompositionOffsets ? 0x00000F01 : 0x00000701;
+
         data.set([
-            0x00, 0x00, 0x0F, 0x01,      // version(0) & flags
+            (trunFlags >>> 24) & 0xFF,   // version(0) & flags
+            (trunFlags >>> 16) & 0xFF,
+            (trunFlags >>>  8) & 0xFF,
+            (trunFlags) & 0xFF,
             (frameCount >>> 24) & 0xFF,
             (frameCount >>> 16) & 0xFF,
             (frameCount >>>  8) & 0xFF,
@@ -913,7 +941,7 @@ class MP4 {
             let size = frames[i].size;
             let flags = frames[i].flags;
             let cts = frames[i].cts;
-            data.set([
+            let sampleData = [
                 (duration >>> 24) & 0xFF,  // sample_duration
                 (duration >>> 16) & 0xFF,
                 (duration >>>  8) & 0xFF,
@@ -924,12 +952,19 @@ class MP4 {
                 (size) & 0xFF,
                 (flags.isLeading << 2) | flags.dependsOn,  // sample_flags
                 (flags.isDependedOn << 6) | (flags.hasRedundancy << 4) | flags.isNonSync,
-                0x00, 0x00,                // sample_degradation_priority
-                (cts >>> 24) & 0xFF,       // sample_composition_time_offset
-                (cts >>> 16) & 0xFF,
-                (cts >>>  8) & 0xFF,
-                (cts) & 0xFF
-            ], 12 + 16 * i);
+                0x00, 0x00                 // sample_degradation_priority
+            ];
+
+            if (hasCompositionOffsets) {
+                sampleData.push(
+                    (cts >>> 24) & 0xFF,   // sample_composition_time_offset
+                    (cts >>> 16) & 0xFF,
+                    (cts >>>  8) & 0xFF,
+                    (cts) & 0xFF
+                );
+            }
+
+            data.set(sampleData, 12 + sampleFieldBytes * i);
         }
         return MP4.box(MP4.types.trun, data);
     }

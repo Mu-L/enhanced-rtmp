@@ -114,6 +114,20 @@ export class MP4Remuxer extends Remuxer {
         this._audioSegmentInfoList.clear();
     }
 
+    _getMp4TrackId(type: TrackType, trackId: number) {
+        if (Number.isFinite(trackId) && trackId > 0) {
+            return trackId;
+        }
+        return type === TrackType.Video ? 1 : 2;
+    }
+
+    _getMp4Metadata(metadata: AudioMetadata | VideoMetadata) {
+        return {
+            ...metadata,
+            trackId: this._getMp4TrackId(metadata.type, metadata.trackId)
+        };
+    }
+
     _onTrackData(audioTrack: AudioTrack, videoTrack: VideoTrack) {
         if (!this._onMediaSegment) {
             throw new IllegalStateException('MP4Remuxer: onMediaSegment callback must be specificed!');
@@ -142,12 +156,12 @@ export class MP4Remuxer extends Remuxer {
                 metabox = new Uint8Array();
             } else {
                 // 'audio/mp4, codecs="codec"'
-                metabox = MP4.generateInitSegment(metadata);
+                metabox = MP4.generateInitSegment(this._getMp4Metadata(metadata));
             }
         } else {
             this._isVideoMetadataDispatched = true;
             this._videoMeta = metadata as VideoMetadata;
-            metabox = MP4.generateInitSegment(metadata);
+            metabox = MP4.generateInitSegment(this._getMp4Metadata(metadata));
         }
 
         // dispatch metabox (Initialization Segment)
@@ -529,7 +543,10 @@ export class MP4Remuxer extends Remuxer {
             moofbox = new Uint8Array();
         } else {
             // Generate moof for fmp4 segment
-            moofbox = MP4.moof(track, firstDts);
+            moofbox = MP4.moof({
+                ...track,
+                id: this._getMp4TrackId(TrackType.Audio, track.id)
+            }, firstDts);
         }
 
         track.frames = [];
@@ -635,7 +652,7 @@ export class MP4Remuxer extends Remuxer {
             let originalDts = frame.dts - this._dtsBase;
             let isKeyframe = frame.isKeyframe;
             let dts = originalDts - dtsCorrection;
-            let cts = frame.cts;
+            let cts = isAv1 ? 0 :frame.cts;
             let pts = dts + cts;
 
             if (firstDts === -1) {
@@ -697,6 +714,10 @@ export class MP4Remuxer extends Remuxer {
             });
         }
 
+        if (isAv1) {
+            mdatBytes = 8 + actualMdatDataBytes;
+        }
+
         // allocate mdatbox
         mdatbox = new Uint8Array(mdatBytes);
         mdatbox[0] = (mdatBytes >>> 24) & 0xFF;
@@ -705,7 +726,7 @@ export class MP4Remuxer extends Remuxer {
         mdatbox[3] = (mdatBytes) & 0xFF;
         mdatbox.set(MP4.types.mdat, 4);
 
-        // Write frames into mdatbox
+        // Write frames into mdatbox (unit.data is already AV1-normalized above)
         for (let i = 0; i < mp4Frames.length; i++) {
             let units = mp4Frames[i].units;
             while (units.length) {
@@ -755,7 +776,10 @@ export class MP4Remuxer extends Remuxer {
 
         //Log.v(MP4Remuxer.TAG, `_remuxVideo() - videoTrack.frames.length: ${videoTrack.frames.length} *************************************************`);
 
-        let moofbox = MP4.moof(track, firstDts);
+        let moofbox = MP4.moof({
+            ...track,
+            id: this._getMp4TrackId(TrackType.Video, track.id)
+        }, firstDts);
         track.frames = [];
         track.length = 0;
 
