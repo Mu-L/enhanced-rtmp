@@ -25,11 +25,11 @@ import { ConfigOptions } from '../config.js';
 export class MP4Remuxer extends Remuxer {
         static TAG = 'MP4Remuxer';
 
-        private _dtsBase = NaN;
+        private _dtsBase = Infinity;
         private _audioDtsBase = Infinity;
         private _videoDtsBase = Infinity;
-        private _audioNextDts = NaN;
-        private _videoNextDts = NaN;
+        private _audioNextDts = Infinity;
+        private _videoNextDts = Infinity;
         private _audioStashedLastFrame: AudioFrame | null = null;
         private _videoStashedLastFrame: VideoFrame | null = null;
 
@@ -72,7 +72,11 @@ export class MP4Remuxer extends Remuxer {
     }
 
     destroy() {
-        this._dtsBase = NaN;
+        this._dtsBase = Infinity;
+        this._audioDtsBase = Infinity;
+        this._videoDtsBase = Infinity;
+        this._audioNextDts = Infinity;
+        this._videoNextDts = Infinity;
         this._audioMeta = null;
         this._videoMeta = null;
         this._audioSegmentInfoList.clear();
@@ -104,7 +108,7 @@ export class MP4Remuxer extends Remuxer {
     }
 
     insertDiscontinuity() {
-        this._audioNextDts = this._videoNextDts = NaN;
+        this._audioNextDts = this._videoNextDts = Infinity;
     }
 
     clear() {
@@ -132,7 +136,8 @@ export class MP4Remuxer extends Remuxer {
         if (!this._onMediaSegment) {
             throw new IllegalStateException('MP4Remuxer: onMediaSegment callback must be specificed!');
         }
-        if (Number.isNaN(this._dtsBase)) {
+        if (this._dtsBase === Infinity) {
+
             this._calculateDtsBase(audioTrack, videoTrack);
         }
         this._remuxVideo(videoTrack, false);
@@ -182,7 +187,7 @@ export class MP4Remuxer extends Remuxer {
     }
 
     _calculateDtsBase(audioTrack: AudioTrack, videoTrack: VideoTrack) {
-        if (Number.isFinite(this._dtsBase)) {
+        if (this._dtsBase !== Infinity) {
             return;
         }
 
@@ -197,7 +202,7 @@ export class MP4Remuxer extends Remuxer {
     }
 
     get timestampBase() {
-        if (Number.isNaN(this._dtsBase)) {
+        if (this._dtsBase === Infinity) {
             return undefined;
         }
         return this._dtsBase;
@@ -252,7 +257,7 @@ export class MP4Remuxer extends Remuxer {
         let refFrameDuration = this._audioMeta.refFrameDuration;
 
         let mpegRawTrack = this._audioMeta.codec === 'mp3' && this._mp3UseMpegAudio;
-        let isFirstSegmentAfterSeek = Number.isFinite(this._dtsBase) && Number.isNaN(this._audioNextDts);
+        let isFirstSegmentAfterSeek = this._dtsBase !== Infinity && this._audioNextDts === Infinity;
 
         let insertPrefixSilentFrame = false;
 
@@ -303,9 +308,9 @@ export class MP4Remuxer extends Remuxer {
         let firstFrameOriginalDts = frames[0].dts - this._dtsBase;
 
         // calculate dtsCorrection
-        if (!Number.isNaN(this._audioNextDts)) {
+        if (this._audioNextDts !== Infinity) {
             dtsCorrection = firstFrameOriginalDts - this._audioNextDts;
-        } else {  // this._audioNextDts == NaN
+        } else {  // this._audioNextDts == Infinity
             if (this._audioSegmentInfoList.isEmpty()) {
                 dtsCorrection = 0;
                 if (this._fillSilentAfterSeek && !this._videoSegmentInfoList.isEmpty()) {
@@ -366,7 +371,7 @@ export class MP4Remuxer extends Remuxer {
                 // for AAC codec, we need to keep dts increase based on refFrameDuration
                 let curRefDts = originalDts;
                 const maxAudioFramesDrift = 3;
-                if (!Number.isNaN(this._audioNextDts)) {
+                if (this._audioNextDts !== Infinity) {
                     curRefDts = this._audioNextDts;
                 }
 
@@ -619,9 +624,9 @@ export class MP4Remuxer extends Remuxer {
         let firstFrameOriginalDts = frames[0].dts - this._dtsBase;
 
         // calculate dtsCorrection
-        if (!Number.isNaN(this._videoNextDts)) {
+        if (this._videoNextDts !== Infinity) {
             dtsCorrection = firstFrameOriginalDts - this._videoNextDts;
-        } else {  // this._videoNextDts == NaN
+        } else {
             if (this._videoSegmentInfoList.isEmpty()) {
                 dtsCorrection = 0;
             } else {

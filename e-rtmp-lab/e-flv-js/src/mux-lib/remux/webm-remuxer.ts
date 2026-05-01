@@ -76,11 +76,11 @@ import { MediaSegmentInfo, FrameInfo } from '../core/media-segment-info.js';
 export class WebMRemuxer extends Remuxer {
   static readonly TAG = 'WebMRemuxer';
 
-  private _dtsBase = NaN;
+  private _dtsBase = Infinity;
   private _audioDtsBase = Infinity;
   private _videoDtsBase = Infinity;
-  private _audioNextDts = NaN;                                // !!@ do we need this?
-  private _videoNextDts = NaN;                                // !!@ do we need this?
+  private _audioNextDts = Infinity;                           // !!@ do we need this?
+  private _videoNextDts = Infinity;                           // !!@ do we need this?
   private _audioStashedLastFrame: AudioFrame | null = null;
   private _videoStashedLastFrame: VideoFrame | null = null;
   private _refVideoFrameDuration = 33.333333333333336;        // Default to 30fps
@@ -93,6 +93,8 @@ export class WebMRemuxer extends Remuxer {
   private _onMediaSegment = assertCallback;
 
   destroy(): void {
+    this._onInitSegment = assertCallback;
+    this._onMediaSegment = assertCallback;
     this.clear();
   }
 
@@ -125,10 +127,15 @@ export class WebMRemuxer extends Remuxer {
   }
   
   insertDiscontinuity(): void {
-    this._audioNextDts = this._videoNextDts = NaN;
+    this._audioNextDts = this._videoNextDts = Infinity;
   } 
   
   clear(): void {
+    this._dtsBase = Infinity;
+    this._audioDtsBase = Infinity;
+    this._videoDtsBase = Infinity;
+    this._audioNextDts = Infinity;
+    this._videoNextDts = Infinity;
     this._videoMeta = null;
     this._audioMeta = null;
     this._audioStashedLastFrame = null;
@@ -140,7 +147,7 @@ export class WebMRemuxer extends Remuxer {
   
   // !!@ TODO: try to move away from undefined when dealing with numbers?
   get timestampBase(): number | undefined {
-    return Number.isFinite(this._dtsBase) ? this._dtsBase : undefined;
+    return this._dtsBase !== Infinity ? this._dtsBase : undefined;
   }
   
   flushStashedFrames(): void {
@@ -183,7 +190,7 @@ export class WebMRemuxer extends Remuxer {
   _onTrackData = (audioTrack: AudioTrack, videoTrack: VideoTrack): void => {
     Log.a(WebMRemuxer.TAG, 'onMediaSegment callback must be specificed!', this._onMediaSegment);
     
-    if (Number.isNaN(this._dtsBase)) {
+    if (this._dtsBase === Infinity) {
       this._calculateDtsBase(audioTrack, videoTrack);
     }
 
@@ -225,7 +232,7 @@ export class WebMRemuxer extends Remuxer {
   }
 
   private _calculateDtsBase (audioTrack: AudioTrack, videoTrack: VideoTrack): void {
-    if (!Number.isNaN(this._dtsBase)) {
+    if (this._dtsBase !== Infinity) {
       return;
     }
 
@@ -382,7 +389,7 @@ export class WebMRemuxer extends Remuxer {
 
     let firstFrameOriginalDts = frames[0].dts - this._dtsBase;
 
-    if (!Number.isNaN(this._audioNextDts)) {
+    if (this._audioNextDts !== Infinity) {
       let dtsCorrection = firstFrameOriginalDts - this._audioNextDts;
       for (let i = 0; i < frames.length; i++) {
         frames[i].dts = frames[i].dts - dtsCorrection;
